@@ -1,7 +1,7 @@
 // ===== File: src/App.js =====
 import React from "react";
 import { Routes, Route, NavLink, useNavigate, useLocation, useParams, Link, Navigate } from "react-router-dom";
-import { CalendarDays, Users2, UserRound, MapPin, Clock, ShieldCheck, Heart, Share2, ArrowLeft, ChevronRight, MessageCircle, Send, Pencil } from "lucide-react";
+import { CalendarDays, Users2, UserRound, MapPin, Clock, ShieldCheck, Heart, Share2, ArrowLeft, ChevronRight, MessageCircle, Pencil } from "lucide-react";
 import clsx from "clsx";
 
 // ---------------- Auth + App Store (localStorage) ----------------
@@ -9,10 +9,13 @@ const StoreContext = React.createContext(null);
 const useStore = () => React.useContext(StoreContext);
 
 const LS_KEYS = {
-  users: "buddyup_users",        // array of {id, firstName, lastName, email, password, year, degree}
-  session: "buddyup_session",    // {userId}
-  data: "buddyup_data_v1",       // per-user data (favorites/posts/groups)
+  users: "buddyup_users",
+  session: "buddyup_session",
+  data: "buddyup_data_v1",
+  queue: "buddyup_queue_v1",   // global queue (per browser)
 };
+
+const safeName = (u) => (u?.firstName || "You");
 
 function load(key, fallback) {
   try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch { return fallback; }
@@ -29,12 +32,16 @@ function StoreProvider({ children }) {
   // Users and session
   const [users, setUsers] = React.useState(() => load(LS_KEYS.users, []));
   const [session, setSession] = React.useState(() => load(LS_KEYS.session, null));
-
   const currentUser = React.useMemo(() => users.find(u => u.id === session?.userId) || null, [users, session]);
 
   // Per-user app data
   const [data, setData] = React.useState(() => load(LS_KEYS.data, {}));
   const ensureUserData = (userId) => data[userId] || { favorites: [], posts: {}, groups: [] };
+
+  // Global per-browser matching queue
+  const [queue, setQueue] = React.useState(() => load(LS_KEYS.queue, {
+    /* shape: { [eventId]: [{ userId, name, requested:{min,max}, enqueuedAt }] } */
+  }));
 
   const events = initialEvents;
 
@@ -42,6 +49,7 @@ function StoreProvider({ children }) {
   React.useEffect(() => save(LS_KEYS.users, users), [users]);
   React.useEffect(() => save(LS_KEYS.session, session), [session]);
   React.useEffect(() => save(LS_KEYS.data, data), [data]);
+  React.useEffect(() => save(LS_KEYS.queue, queue), [queue]);
 
   // -------- auth actions --------
   const signUp = ({ firstName, lastName, email, password, year, degree }) => {
@@ -110,11 +118,88 @@ function StoreProvider({ children }) {
     });
   };
 
+  // --------- MATCHING (no-backend, localStorage) ---------
+  const groupBounds = (sizeLabel) => sizeLabel === "2" ? { min: 2, max: 2 } : { min: 3, max: 4 };
+
+  const enqueueForEvent = (eventId, sizeLabel) => {
+    if (!currentUser) throw new Error("You must be logged in to find a buddy.");
+    const { min, max } = groupBounds(sizeLabel);
+    setQueue(prev => {
+      const list = [...(prev[eventId] || [])];
+      if (!list.some(q => q.userId === currentUser.id)) {
+        list.push({ userId: currentUser.id, name: safeName(currentUser), requested: { min, max }, enqueuedAt: Date.now() });
+      }
+      return { ...prev, [eventId]: list.sort((a, b) => a.enqueuedAt - b.enqueuedAt) };
+    });
+  };
+
+  const cancelQueue = (eventId) => {
+    if (!currentUser) return;
+    setQueue(prev => {
+      const list = (prev[eventId] || []).filter(q => q.userId !== currentUser.id);
+      const next = { ...prev, [eventId]: list };
+      if (list.length === 0) delete next[eventId];
+      return next;
+    });
+  };
+
+  // Try to form a group for an event. Strategy: if any waiting user wants 3+, make a 3; else make a pair (2).
+  const tryMatch = (eventId) => {
+    const list = queue[eventId] || [];
+    if (list.length === 0) return null;
+
+    const anyWants3 = list.some(q => q.requested.min >= 3);
+    const targetSize = anyWants3 ? 3 : 2;
+
+    if (list.length < targetSize) return null;
+
+    const selected = list.slice(0, targetSize);
+    const memberIds = selected.map(s => s.userId);
+    const memberNames = selected.map(s => s.name);
+
+    const newGroup = {
+      id: crypto.randomUUID(),
+      eventId,
+      title: `Group (${targetSize}) – ${eventId}`,
+      members: memberNames,
+      messages: [{ id: crypto.randomUUID(), user: "System", text: "Group created. Say hi!", ts: Date.now() }]
+    };
+
+    // write group into each selected user's "groups"
+    setData(prev => {
+      const next = { ...prev };
+      for (const uid of memberIds) {
+        const ud = (next[uid] || { favorites: [], posts: {}, groups: [] });
+        next[uid] = { ...ud, groups: [newGroup, ...(ud.groups || [])] };
+      }
+      return next;
+    });
+
+    // remove matched users from queue
+    setQueue(prev => {
+      const remaining = (prev[eventId] || []).filter(q => !memberIds.includes(q.userId));
+      const next = { ...prev, [eventId]: remaining };
+      if (remaining.length === 0) delete next[eventId];
+      return next;
+    });
+
+    return newGroup.id;
+  };
+
+  const isQueued = (eventId) =>
+    currentUser ? (queue[eventId] || []).some(q => q.userId === currentUser.id) : false;
+
+  // -------- derived --------
   const favorites = new Set(currentUser ? ensureUserData(currentUser.id).favorites : []);
   const posts = currentUser ? ensureUserData(currentUser.id).posts : {};
   const groups = currentUser ? ensureUserData(currentUser.id).groups : [];
 
-  const value = { events, users, currentUser, signUp, logIn, logOut, favorites, toggleFavorite, posts, addPost, groups, addMessage, createGroupFromEvent };
+  const value = {
+    events, users, currentUser, signUp, logIn, logOut,
+    favorites, toggleFavorite, posts, addPost, groups, addMessage, createGroupFromEvent,
+    // matching
+    queue, enqueueForEvent, cancelQueue, tryMatch, isQueued
+  };
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }
 
@@ -130,20 +215,24 @@ const Section = ({ title, children }) => (
 );
 
 const Tag = ({ children, tone = "slate" }) => (
-  <span className={clsx("inline-flex items-center rounded-full text-xs px-2.5 py-1 mr-2 mb-2", tone === "slate" && "bg-zinc-800 text-zinc-300 ring-1 ring-zinc-700", tone === "indigo" && "bg-indigo-600/15 text-indigo-300 ring-1 ring-indigo-700/40", tone === "green" && "bg-emerald-600/15 text-emerald-300 ring-1 ring-emerald-700/40")}>{children}</span>
+  <span className={clsx(
+    "inline-flex items-center rounded-full text-xs px-2.5 py-1 mr-2 mb-2",
+    tone === "slate" && "bg-zinc-800 text-zinc-300 ring-1 ring-zinc-700",
+    tone === "indigo" && "bg-indigo-600/15 text-indigo-300 ring-1 ring-indigo-700/40",
+    tone === "green" && "bg-emerald-600/15 text-emerald-300 ring-1 ring-emerald-700/40"
+  )}>{children}</span>
 );
 
 const Card = ({ children, className, onClick }) => (
   <div onClick={onClick} className={clsx("rounded-2xl bg-zinc-900/70 shadow-[0_10px_30px_-10px_rgba(0,0,0,.6)] ring-1 ring-zinc-800 p-5", className)}>{children}</div>
 );
 
-const Toggle = ({ checked, onChange }) => (
-  <button onClick={() => onChange(!checked)} className={clsx("h-6 w-11 rounded-full relative transition-colors duration-200", checked ? "bg-emerald-600" : "bg-zinc-700")} aria-pressed={checked}><span className={clsx("absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform", checked ? "translate-x-6" : "translate-x-0.5")} /></button>
-);
-
 const Layout = ({ children, title }) => (
   <div className="min-h-screen bg-zinc-950 text-zinc-300">
-    <div className="mx-auto max-w-md pb-24 px-4">{title && (<h1 className="pt-8 text-2xl font-semibold text-zinc-100">{title}</h1>)}{children}</div>
+    <div className="mx-auto max-w-md pb-24 px-4">
+      {title && (<h1 className="pt-8 text-2xl font-semibold text-zinc-100">{title}</h1>)}
+      {children}
+    </div>
     <BottomNav />
   </div>
 );
@@ -172,7 +261,10 @@ const BottomNav = () => {
 };
 
 const EventCard = ({ ev }) => {
-  const navigate = useNavigate(); return (
+  const navigate = useNavigate();
+  const { isQueued } = useStore();
+  const queued = isQueued(ev.id);
+  return (
     <Card className="mb-4 cursor-pointer" onClick={() => navigate(`/event/${ev.id}`)}>
       <h3 className="text-zinc-100 text-lg font-medium">{ev.title}</h3>
       <p className="text-zinc-400 text-sm">{ev.org}</p>
@@ -181,6 +273,7 @@ const EventCard = ({ ev }) => {
         <div className="flex items-center gap-2 text-zinc-300"><MapPin className="h-4 w-4 text-indigo-400" /><span>{ev.place}</span></div>
       </div>
       <div className="mt-3">{ev.tags?.map((t) => (<Tag key={t} tone={t === "Social" || t === "Movies" ? "indigo" : "slate"}>{t}</Tag>))}</div>
+      {queued && <div className="mt-2 text-xs text-indigo-300">You’re waiting to be matched</div>}
     </Card>
   );
 };
@@ -205,10 +298,26 @@ function EventsPage() {
 
 function EventDetailsPage({ id }) {
   const navigate = useNavigate();
-  const { events, favorites, toggleFavorite, createGroupFromEvent, currentUser } = useStore();
+  const { events, favorites, toggleFavorite, currentUser,
+    enqueueForEvent, cancelQueue, tryMatch, isQueued } = useStore();
+
   const ev = events.find(e => e.id === id) || events[0];
   const [groupSize, setGroupSize] = React.useState("3-4");
   const isFav = favorites.has(ev.id);
+  const queued = isQueued(ev.id);
+
+  // Optional: auto-check matching every 3s while queued
+  React.useEffect(() => {
+    if (!queued) return;
+    const t = setInterval(() => {
+      const gid = tryMatch(ev.id);
+      if (gid) {
+        clearInterval(t);
+        navigate(`/matches#${gid}`);
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [queued, ev.id, tryMatch, navigate]);
 
   return (
     <Layout>
@@ -232,10 +341,57 @@ function EventDetailsPage({ id }) {
 
       <Section title="Find Your Buddy">
         <div className="space-y-3">
-          <Card className={clsx("flex items-center justify-between", groupSize === "2" && "ring-indigo-600/50")}> <div><p className="text-zinc-100 font-medium">Go as a Pair (2 people)</p><p className="text-sm text-zinc-400">Find one buddy to attend with</p></div><input type="radio" name="g" checked={groupSize === "2"} onChange={() => setGroupSize("2")} /></Card>
-          <Card className={clsx("flex items-center justify-between", groupSize === "3-4" && "ring-indigo-600/50")}> <div><p className="text-zinc-100 font-medium">Join a Small Group (3-4 people)</p><p className="text-sm text-zinc-400">Connect with a small group of students</p></div><input type="radio" name="g" checked={groupSize === "3-4"} onChange={() => setGroupSize("3-4")} /></Card>
-          <Button onClick={() => { const id = createGroupFromEvent(ev.id, groupSize); if (id) navigate(`/matches#${id}`); }} className="w-full mt-1">Find a Buddy <ChevronRight className="h-4 w-4" /></Button>
-          {!currentUser && <p className="text-xs text-zinc-400">Tip: Log in to create groups and chat.</p>}
+          <Card className={clsx("flex items-center justify-between", groupSize === "2" && "ring-indigo-600/50")}>
+            <div>
+              <p className="text-zinc-100 font-medium">Go as a Pair (2 people)</p>
+              <p className="text-sm text-zinc-400">Find one buddy to attend with</p>
+            </div>
+            <input type="radio" name="g" checked={groupSize === "2"} onChange={() => setGroupSize("2")} />
+          </Card>
+
+          <Card className={clsx("flex items-center justify-between", groupSize === "3-4" && "ring-indigo-600/50")}>
+            <div>
+              <p className="text-zinc-100 font-medium">Join a Small Group (3-4 people)</p>
+              <p className="text-sm text-zinc-400">Connect with a small group of students</p>
+            </div>
+            <input type="radio" name="g" checked={groupSize === "3-4"} onChange={() => setGroupSize("3-4")} />
+          </Card>
+
+          {!queued ? (
+            <Button
+              onClick={() => {
+                if (!currentUser) { alert("Please log in first."); return; }
+                enqueueForEvent(ev.id, groupSize);
+                const gid = tryMatch(ev.id); // attempt immediate match
+                if (gid) navigate(`/matches#${gid}`);
+                else alert("You’re in the queue. We’ll match you when enough people join.");
+              }}
+              className="w-full mt-1"
+            >
+              Find a Buddy <ChevronRight className="h-4 w-4" />
+            </Button>
+          ) : (
+            <div className="flex gap-2">
+              <Button
+                onClick={() => {
+                  const gid = tryMatch(ev.id);
+                  if (gid) navigate(`/matches#${gid}`);
+                  else alert("Still waiting for more people…");
+                }}
+                className="flex-1 mt-1"
+              >
+                Check for Match
+              </Button>
+              <Button
+                onClick={() => cancelQueue(ev.id)}
+                className="flex-1 mt-1 bg-zinc-800 hover:bg-zinc-700"
+              >
+                Cancel Waiting
+              </Button>
+            </div>
+          )}
+
+          {!currentUser && <p className="text-xs text-zinc-400">Tip: Log in to queue and chat.</p>}
         </div>
       </Section>
 
@@ -254,33 +410,75 @@ function Chat({ groupId }) {
   if (!group) return <Card>Group not found.</Card>;
   return (
     <Card className="mt-4">
-      <div className="space-y-3 max-h-64 overflow-auto pr-1">{group.messages.map(m => (<div key={m.id} className={clsx("flex", m.user === (currentUser?.firstName || "You") ? "justify-end" : "justify-start")}> <div className={clsx("px-3 py-2 rounded-xl text-sm", m.user === (currentUser?.firstName || "You") ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-200")}>{m.text}</div></div>))}</div>
+      <div className="space-y-3 max-h-64 overflow-auto pr-1">
+        {group.messages.map(m => (
+          <div key={m.id} className={clsx("flex", m.user === (currentUser?.firstName || "You") ? "justify-end" : "justify-start")}>
+            <div className={clsx("px-3 py-2 rounded-xl text-sm", m.user === (currentUser?.firstName || "You") ? "bg-indigo-600 text-white" : "bg-zinc-800 text-zinc-200")}>{m.text}</div>
+          </div>
+        ))}
+      </div>
       <div className="mt-4 flex items-center gap-2">
         <input value={text} onChange={(e) => setText(e.target.value)} className="flex-1 rounded-xl bg-zinc-900 ring-1 ring-zinc-800 px-3 py-2 text-sm outline-none placeholder:text-zinc-500" placeholder="Type a message…" />
-        <button onClick={() => { if (text.trim()) { addMessage(groupId, currentUser?.firstName || "You", text.trim()); setText(""); } }} className="p-2 rounded-xl bg-indigo-600 text-white"><MessageCircle className="h-5 w-5" /></button>
+        <button
+          onClick={() => { if (text.trim()) { addMessage(groupId, currentUser?.firstName || "You", text.trim()); setText(""); } }}
+          className="p-2 rounded-xl bg-indigo-600 text-white"
+        >
+          <MessageCircle className="h-5 w-5" />
+        </button>
       </div>
     </Card>
   );
 }
 
 function PostComposer({ eventId }) {
-  const { addPost, currentUser } = useStore(); const [text, setText] = React.useState(""); return (
+  const { addPost, currentUser } = useStore();
+  const [text, setText] = React.useState("");
+  return (
     <Card>
       <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} className="w-full resize-none rounded-xl bg-zinc-900 ring-1 ring-zinc-800 px-3 py-2 text-sm outline-none placeholder:text-zinc-500" placeholder="Ask a question or invite others to join…" />
-      <div className="mt-2 text-right"><Button onClick={() => { if (text.trim()) { addPost(eventId, currentUser ? `${currentUser.firstName}` : "You", text.trim()); setText(""); } }}>Post</Button></div>
+      <div className="mt-2 text-right">
+        <Button onClick={() => { if (text.trim()) { addPost(eventId, currentUser ? `${currentUser.firstName}` : "You", text.trim()); setText(""); } }}>Post</Button>
+      </div>
     </Card>
   );
 }
 
 function PostList({ eventId }) {
-  const { posts } = useStore(); const items = posts[eventId] || []; return (
-    <div className="space-y-3">{items.map(p => (<Card key={p.id} className="text-sm"><div className="text-zinc-400 text-xs mb-1">{p.user}</div><div className="text-zinc-200 leading-6">{p.text}</div></Card>))}{items.length === 0 && <Card className="text-sm text-zinc-400">No posts yet. Be the first to start the thread!</Card>}</div>
+  const { posts } = useStore(); const items = posts[eventId] || [];
+  return (
+    <div className="space-y-3">
+      {items.map(p => (
+        <Card key={p.id} className="text-sm">
+          <div className="text-zinc-400 text-xs mb-1">{p.user}</div>
+          <div className="text-zinc-200 leading-6">{p.text}</div>
+        </Card>
+      ))}
+      {items.length === 0 && <Card className="text-sm text-zinc-400">No posts yet. Be the first to start the thread!</Card>}
+    </div>
   );
 }
 
 function MatchesPage() {
-  const { groups } = useStore(); return (
-    <Layout title="Your Matches"><div className="space-y-4 mt-4">{groups.map(g => (<div key={g.id} id={g.id}><Card className="mb-2"><div className="text-zinc-100 font-medium">{g.title}</div><div className="text-sm text-zinc-400">Members: {g.members.join(", ")}</div></Card><Chat groupId={g.id} /></div>))}{groups.length === 0 && (<Card className="text-center py-8">No matches yet. Join an event and tap <span className="font-medium">Find a Buddy</span> to create a group.</Card>)}</div></Layout>
+  const { groups } = useStore();
+  return (
+    <Layout title="Your Matches">
+      <div className="space-y-4 mt-4">
+        {groups.map(g => (
+          <div key={g.id} id={g.id}>
+            <Card className="mb-2">
+              <div className="text-zinc-100 font-medium">{g.title}</div>
+              <div className="text-sm text-zinc-400">Members: {g.members.join(", ")}</div>
+            </Card>
+            <Chat groupId={g.id} />
+          </div>
+        ))}
+        {groups.length === 0 && (
+          <Card className="text-center py-8">
+            No matches yet. Join an event and tap <span className="font-medium">Find a Buddy</span>.
+          </Card>
+        )}
+      </div>
+    </Layout>
   );
 }
 
@@ -299,21 +497,64 @@ function ProfilePage() {
           <h3 className="text-zinc-100 font-semibold">{currentUser ? `${currentUser.firstName} ${currentUser.lastName || ""}` : "Guest"}</h3>
           <p className="text-zinc-400 text-sm">{currentUser?.email || "Not logged in"}</p>
         </div>
-        <button onClick={() => navigate("/signup")} className="mt-3 inline-flex items-center gap-2 rounded-2xl ring-1 ring-indigo-700/40 text-indigo-300 px-3 py-1.5"><Pencil className="h-4 w-4" />Edit Profile</button>
+        <button onClick={() => navigate("/signup")} className="mt-3 inline-flex items-center gap-2 rounded-2xl ring-1 ring-indigo-700/40 text-indigo-300 px-3 py-1.5">
+          <Pencil className="h-4 w-4" />Edit Profile
+        </button>
       </Card>
 
-      <Section title="Saved Events">{saved.length ? (<div className="space-y-3">{saved.map(ev => (<Card key={ev.id}><div className="text-zinc-100 font-medium">{ev.title}</div><div className="text-sm text-zinc-400">{ev.time} · {ev.place}</div></Card>))}</div>) : (<Card>No saved events yet. Tap the heart on an event to save it here.</Card>)}</Section>
+      <Section title="Saved Events">
+        {saved.length ? (
+          <div className="space-y-3">
+            {saved.map(ev => (
+              <Card key={ev.id}>
+                <div className="text-zinc-100 font-medium">{ev.title}</div>
+                <div className="text-sm text-zinc-400">{ev.time} · {ev.place}</div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <Card>No saved events yet. Tap the heart on an event to save it here.</Card>
+        )}
+      </Section>
 
-      <Section title="Help & Support"><Card><p className="text-sm text-zinc-300">Need help? Quick tips:</p><ul className="list-disc pl-5 text-sm mt-2 space-y-1 text-zinc-300"><li>Meet in public campus locations.</li><li>Use in-chat safety tools to flag concerns.</li><li>Toggle discovery in <span className="font-medium">Public Profile</span>.</li></ul><div className="mt-3 text-sm">Contact: <a className="text-indigo-300" href="mailto:support@buddyup.app">support@buddyup.app</a></div></Card></Section>
+      <Section title="Help & Support">
+        <Card>
+          <p className="text-sm text-zinc-300">Need help? Quick tips:</p>
+          <ul className="list-disc pl-5 text-sm mt-2 space-y-1 text-zinc-300">
+            <li>Meet in public campus locations.</li>
+            <li>Use in-chat safety tools to flag concerns.</li>
+            <li>Toggle discovery in <span className="font-medium">Public Profile</span>.</li>
+          </ul>
+          <div className="mt-3 text-sm">Contact: <a className="text-indigo-300" href="mailto:support@buddyup.app">support@buddyup.app</a></div>
+        </Card>
+      </Section>
 
-      <Section title=" "><Button onClick={() => { logOut(); navigate("/login"); }} className="w-full bg-red-600 hover:bg-red-500 mt-6">Log Out</Button></Section>
+      <Section title=" ">
+        <Button onClick={() => { logOut(); navigate("/login"); }} className="w-full bg-red-600 hover:bg-red-500 mt-6">Log Out</Button>
+      </Section>
     </Layout>
   );
 }
 
 function OnboardingPage() {
-  const navigate = useNavigate(); return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-300"><div className="mx-auto max-w-md px-4 pb-10"><h1 className="text-center pt-10 text-3xl font-semibold text-indigo-300">Welcome to BuddyUp!</h1><p className="text-center text-zinc-400 mt-2">Quick preferences (you can change later)</p><Card className="mt-10 p-6"><div className="grid grid-cols-2 gap-3"><button className="rounded-xl ring-1 ring-zinc-700 py-2">Movies</button><button className="rounded-xl ring-1 ring-zinc-700 py-2">Sports</button><button className="rounded-xl ring-1 ring-zinc-700 py-2">Study</button><button className="rounded-xl ring-1 ring-zinc-700 py-2">Social</button></div><Button onClick={() => navigate("/")} className="w-full mt-6">Continue</Button></Card></div><BottomNav /></div>
+  const navigate = useNavigate();
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-300">
+      <div className="mx-auto max-w-md px-4 pb-10">
+        <h1 className="text-center pt-10 text-3xl font-semibold text-indigo-300">Welcome to BuddyUp!</h1>
+        <p className="text-center text-zinc-400 mt-2">Quick preferences (you can change later)</p>
+        <Card className="mt-10 p-6">
+          <div className="grid grid-cols-2 gap-3">
+            <button className="rounded-xl ring-1 ring-zinc-700 py-2">Movies</button>
+            <button className="rounded-xl ring-1 ring-zinc-700 py-2">Sports</button>
+            <button className="rounded-xl ring-1 ring-zinc-700 py-2">Study</button>
+            <button className="rounded-xl ring-1 ring-zinc-700 py-2">Social</button>
+          </div>
+          <Button onClick={() => navigate("/")} className="w-full mt-6">Continue</Button>
+        </Card>
+      </div>
+      <BottomNav />
+    </div>
   );
 }
 
@@ -384,8 +625,6 @@ function LoginPage() {
 
 // ------------- Router wrappers -------------
 function EventDetailsWrapper() { const { id } = useParams(); return <EventDetailsPage id={id} /> }
-
-// Optionally gate some routes (require login)
 function RequireAuth({ children }) { const { currentUser } = useStore(); return currentUser ? children : <Navigate to="/login" replace /> }
 
 export default function App() {
