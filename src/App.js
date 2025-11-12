@@ -23,9 +23,123 @@ function load(key, fallback) {
 function save(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 
 const initialEvents = [
-  { id: "movie-night", title: "International Movie Night", org: "International Student Society", time: "Today, 7:00 PM", whenFull: "Today, 7:00 PM - 10:00 PM", place: "Student Union Cinema", placeFull: "Student Union Cinema, Building A", interested: 24, tags: ["Social", "Movies", "Cultural"], verified: true, description: "Join us for a cozy movie night featuring films from around the world! This week we're screening 'Spirited Away' with English subtitles. Perfect for international students and movie lovers.", requirements: ["Must be a registered student", "Bring student ID"] },
-  { id: "basketball", title: "Basketball Pickup Game", org: "Intramural Sports Club", time: "Tomorrow, 4:00 PM", place: "Recreation Center Court 2", interested: 12, tags: ["Sports", "Beginner-Friendly"] },
-  { id: "study-chem", title: "Study Group: Chemistry 101", org: "Chemistry Study Group", time: "Wed, 6:00 PM", place: "Library Study Room B", interested: 8, tags: ["Academic", "Study", "STEM"] },
+  // --- Social / Cultural ---
+  {
+    id: "movie-night", title: "International Movie Night", org: "International Student Society",
+    time: "Today, 7:00 PM", whenFull: "Today, 7:00 PM - 10:00 PM",
+    place: "Student Union Cinema", placeFull: "Student Union Cinema, Building A",
+    interested: 24, tags: ["Social", "Movies", "Cultural"], verified: true,
+    description: "Join us for a cozy movie night featuring films from around the world!"
+  },
+
+  {
+    id: "board-games-cafe", title: "Board Games & Chill", org: "Social Club",
+    time: "Thu, 6:30 PM", place: "Student Hub, Level 2",
+    interested: 18, tags: ["Social", "Cultural"]
+  },
+
+  {
+    id: "lantern-festival", title: "Mini Lantern Festival", org: "Cultural Exchange",
+    time: "Fri, 7:30 PM", place: "Main Lawn",
+    interested: 42, tags: ["Cultural", "Social"], verified: true
+  },
+
+  // --- Sports / Outdoor ---
+  {
+    id: "basketball", title: "Basketball Pickup Game", org: "Intramural Sports Club",
+    time: "Tomorrow, 4:00 PM", place: "Recreation Center Court 2",
+    interested: 12, tags: ["Sports", "Beginner-Friendly"]
+  },
+
+  {
+    id: "sunrise-hike", title: "Sunrise Mt Coot-tha Hike", org: "Outdoor Adventures",
+    time: "Sat, 5:15 AM", place: "Mt Coot-tha Lookout (carpark)",
+    interested: 27, tags: ["Outdoor", "Sports"]
+  },
+
+  {
+    id: "tennis-social", title: "Tennis Social Hit", org: "Tennis Society",
+    time: "Sun, 3:00 PM", place: "Court 5 & 6",
+    interested: 20, tags: ["Sports", "Beginner-Friendly"]
+  },
+
+  // --- Academic / Tech / Career ---
+  {
+    id: "study-chem", title: "Study Group: Chemistry 101", org: "Chemistry Study Group",
+    time: "Wed, 6:00 PM", place: "Library Study Room B",
+    interested: 8, tags: ["Academic", "Study", "STEM"]
+  },
+
+  {
+    id: "leetcode-night", title: "LeetCode Night (Pairs)", org: "Programming Society",
+    time: "Mon, 6:00 PM", place: "CS Building Lab 3",
+    interested: 31, tags: ["Tech", "Academic", "Study"]
+  },
+
+  {
+    id: "hack-night", title: "Mini Hack Night", org: "Developer Student Club",
+    time: "Tue, 5:30 PM", place: "Innovation Hub",
+    interested: 44, tags: ["Tech", "Career"], verified: true,
+    description: "Form small teams and prototype ideas in 2 hours."
+  },
+
+  {
+    id: "resume-clinic", title: "Resume & LinkedIn Clinic", org: "Careers & Employability",
+    time: "Thu, 2:00 PM", place: "Careers Centre",
+    interested: 36, tags: ["Career", "Academic"]
+  },
+
+  {
+    id: "ai-seminar", title: "Seminar: Intro to LLMs", org: "Data Science Society",
+    time: "Fri, 4:00 PM", place: "Eng Building 23, Room 201",
+    interested: 52, tags: ["Tech", "Academic", "STEM"], verified: true
+  },
+
+  // --- Music / Food ---
+  {
+    id: "open-mic", title: "Open-Mic Night", org: "Music Society",
+    time: "Sat, 7:00 PM", place: "Student Bar Stage",
+    interested: 29, tags: ["Music", "Social", "Cultural"]
+  },
+
+  {
+    id: "taco-tuesday", title: "Taco Tuesday Meetup", org: "Foodies Club",
+    time: "Tue, 6:30 PM", place: "Food Court (stall 4)",
+    interested: 33, tags: ["Food", "Social"]
+  },
+
+  {
+    id: "coffee-catchup", title: "Coffee & Co-working", org: "Productivity Circle",
+    time: "Daily, 10:00 AM", place: "Library Café",
+    interested: 11, tags: ["Food", "Academic", "Study"]
+  },
+
+  // --- Volunteering / Community ---
+  {
+    id: "campus-cleanup", title: "Campus Clean-Up Hour", org: "Sustainability Club",
+    time: "Sun, 10:00 AM", place: "Main Lawn Gazebo",
+    interested: 22, tags: ["Volunteering", "Outdoor"], verified: true,
+    requirements: ["Bring water bottle", "Wear closed shoes"]
+  },
+
+  {
+    id: "charity-bake", title: "Charity Bake Sale Prep", org: "Community Club",
+    time: "Fri, 3:00 PM", place: "Kitchen Lab 1",
+    interested: 14, tags: ["Volunteering", "Food"]
+  },
+
+  // --- Language / Culture / Low-pressure study ---
+  {
+    id: "language-exchange", title: "Language Exchange (RU/EN)", org: "Language Society",
+    time: "Wed, 5:30 PM", place: "Humanities Lounge",
+    interested: 19, tags: ["Cultural", "Social"]
+  },
+
+  {
+    id: "quiet-study", title: "Quiet Study + Accountability", org: "Study Buddies",
+    time: "Weekdays, 4:00 PM", place: "Library Silent Area C",
+    interested: 9, tags: ["Academic", "Study"]
+  },
 ];
 
 function StoreProvider({ children }) {
@@ -281,7 +395,7 @@ const EventCard = ({ ev }) => {
 function EventsPage() {
   const [tab, setTab] = React.useState("All");
   const { events } = useStore();
-  const tabs = ["All", "Social", "Sports", "Academic", "Cultural"];
+  const tabs = ["All", "Social", "Sports", "Academic", "Cultural", "Tech", "Music", "Food", "Volunteering", "Career", "Outdoor"];
   return (
     <Layout title="Upcoming Events">
       <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
