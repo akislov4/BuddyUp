@@ -754,5 +754,6 @@ export default function App() {
         <Route path="/onboarding" element={<OnboardingPage />} />
       </Routes>
     </StoreProvider>
+    
   );
 }
